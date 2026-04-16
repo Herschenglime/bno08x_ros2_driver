@@ -185,7 +185,7 @@ void BNO08xROS::init_sensor() {
         bno08x_ = std::make_unique<BNO08x>(
             comm_interface_.get(),  // raw pointer
             std::bind(&BNO08xROS::sensor_callback, this,
-            std::placeholders::_1, std::placeholders::_2), this
+            std::placeholders::_1, std::placeholders::_2, std::placeholders::_3), this
         );
     } catch (const std::bad_alloc& e) {
         RCLCPP_ERROR(this->get_logger(),
@@ -308,13 +308,83 @@ float BNO08xROS::get_covariance_scaled(float base_variance, acc_stat_t accuracy)
 }
 
 /**
+ * @brief Establish synchronization between hardware timestamp and ROS wall-clock time
+ *
+ * This function should be called on the first valid hardware timestamp to lock
+ * the offset between hardware microseconds and ROS time in microseconds.
+ *
+ * @param hw_timestamp_us Hardware timestamp in microseconds
+ */
+void BNO08xROS::establish_hw_clock_sync(uint64_t hw_timestamp_us) {
+    if (hw_clock_synced_) {
+        return;  // Already synced, don't re-sync
+    }
+    
+    if (hw_timestamp_us == 0) {
+        RCLCPP_WARN(this->get_logger(), "Invalid hardware timestamp (0) for clock sync");
+        return;
+    }
+    
+    // Calculate offset: ros_time_us = hw_timestamp_us + offset
+    auto ros_now = this->now();
+    int64_t ros_time_us = ros_now.nanoseconds() / 1000;  // Convert nanoseconds to microseconds
+    hw_clock_offset_us_ = ros_time_us - static_cast<int64_t>(hw_timestamp_us);
+    hw_clock_synced_ = true;
+    
+    RCLCPP_INFO(this->get_logger(), "Hardware clock synchronized. Offset: %ld us, HW time: %lu us, ROS time: %ld us",
+                hw_clock_offset_us_, hw_timestamp_us, ros_time_us);
+}
+
+/**
+ * @brief Convert hardware timestamp to ROS time
+ *
+ * Converts a hardware timestamp (in microseconds) to ROS time using the
+ * established synchronization offset. Validates timestamp and establishes
+ * sync on first valid timestamp.
+ *
+ * @param hw_timestamp_us Hardware timestamp in microseconds
+ * @return rclcpp::Time The converted ROS time
+ */
+rclcpp::Time BNO08xROS::convert_hw_timestamp_to_ros(uint64_t hw_timestamp_us) {
+    // Reject zero or invalid timestamps
+    if (hw_timestamp_us == 0) {
+        RCLCPP_ERROR(this->get_logger(), "Rejecting measurement with invalid hardware timestamp (0)");
+        return this->now();  // Fallback to system time on invalid timestamp
+    }
+    
+    // Establish sync on first valid timestamp
+    if (!hw_clock_synced_) {
+        establish_hw_clock_sync(hw_timestamp_us);
+    }
+    
+    // Check for timestamp discontinuities (backward jumps, excessive gaps)
+    if (last_hw_timestamp_us_ > 0) {
+        int64_t delta_us = static_cast<int64_t>(hw_timestamp_us) - static_cast<int64_t>(last_hw_timestamp_us_);
+        
+        // Detect backward jump (more than 100ms backwards)
+        if (delta_us < -100000) {
+            RCLCPP_WARN(this->get_logger(), "Hardware clock backward jump detected: %ld us", delta_us);
+        }
+        // Detect excessive forward gap (more than 1 second gap, unusual for IMU)
+        else if (delta_us > 1000000) {
+            RCLCPP_WARN(this->get_logger(), "Hardware clock forward gap detected: %ld us", delta_us);
+        }
+    }
+    last_hw_timestamp_us_ = hw_timestamp_us;
+    
+    // Convert to ROS time: ros_time_us = hw_timestamp_us + hw_clock_offset_us_
+    int64_t ros_time_us = static_cast<int64_t>(hw_timestamp_us) + hw_clock_offset_us_;
+    return rclcpp::Time(ros_time_us * 1000);  // Convert microseconds to nanoseconds
+}
+
+/**
  * @brief Callback function for sensor events
  *
  * @param cookie Pointer to the object that called the function, not used here
  * @param sensor_value The sensor value from parsing the sensor event buffer
  *
  */
-void BNO08xROS::sensor_callback(void *cookie, sh2_SensorValue_t *sensor_value) {
+void BNO08xROS::sensor_callback(void *cookie, sh2_SensorEvent_t *event, sh2_SensorValue_t *sensor_value) {
     DEBUG_LOG("Sensor Callback");
     watchdog_->reset();
 
@@ -329,14 +399,14 @@ void BNO08xROS::sensor_callback(void *cookie, sh2_SensorValue_t *sensor_value) {
             // Start bundle timing if this is the first component
             imu_bundle_active_ = true;
             imu_bundle_start_time_ = now;
-            imu_bundle_stamp_ = now;
+            imu_bundle_stamp_ = convert_hw_timestamp_to_ros(sensor_value->timestamp);
         } else if ((now - imu_bundle_start_time_).seconds() >= IMU_BUNDLE_TIMEOUT_SEC) {
             // If bundle takes too long, treat the current message as “first of a new bundle”
             RCLCPP_WARN(this->get_logger(), "IMU data bundle timeout. flag=0x%02x. Restarting bundle.", imu_received_flag_);
             imu_received_flag_ = 0;
             imu_bundle_active_ = true;
             imu_bundle_start_time_ = now;
-            imu_bundle_stamp_ = now;
+            imu_bundle_stamp_ = convert_hw_timestamp_to_ros(sensor_value->timestamp);
             // continue processing current message as first element of the new bundle
         }
     }
@@ -361,7 +431,7 @@ void BNO08xROS::sensor_callback(void *cookie, sh2_SensorValue_t *sensor_value) {
             mag_msg_.magnetic_field.y = sensor_value->un.magneticField.y * to_tesla;
             mag_msg_.magnetic_field.z = sensor_value->un.magneticField.z * to_tesla;
             mag_msg_.header.frame_id = frame_id_;
-            mag_msg_.header.stamp = now;
+            mag_msg_.header.stamp = convert_hw_timestamp_to_ros(sensor_value->timestamp);
             // IMU will still return infrequent magnetic field reports even if the report
             // was not enabled, so check it was enabled before publishing.
 

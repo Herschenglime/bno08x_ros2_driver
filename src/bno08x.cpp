@@ -20,7 +20,7 @@ static uint32_t get_time_us(sh2_Hal_t* /*self*/) {
  * @param comm The communication interface to use
  * 
  */
-BNO08x::BNO08x(CommInterface* comm, std::function<void(void*, sh2_SensorValue_t*)> sensor_callback, 
+BNO08x::BNO08x(CommInterface* comm, std::function<void(void*, sh2_SensorEvent_t*, sh2_SensorValue_t*)> sensor_callback, 
                   void *cookie) : comm_(comm), cookie_(cookie), host_callback_(sensor_callback) {};
 
 /**
@@ -133,7 +133,7 @@ inline void BNO08x::sensor_event_callback(void *cookie, sh2_SensorEvent_t *event
   }
   */
 
-  instance->host_callback_(cookie, &sensor_value);
+  instance->host_callback_(cookie, event, &sensor_value);
 }
 
 /**

@@ -21,7 +21,7 @@ class BNO08xROS : public rclcpp::Node
 public:
     BNO08xROS();
     ~BNO08xROS();
-    void sensor_callback(void *cookie, sh2_SensorValue_t *sensor_value);
+    void sensor_callback(void *cookie, sh2_SensorEvent_t *event, sh2_SensorValue_t *sensor_value);
 
 private:
     void init_comms();
@@ -31,6 +31,10 @@ private:
     void reset();
     std::string sensor_name(uint8_t sensor_id);
     std::string accuracy_status_string();
+    
+    // Hardware timestamp synchronization
+    rclcpp::Time convert_hw_timestamp_to_ros(uint64_t hw_timestamp_us);
+    void establish_hw_clock_sync(uint64_t hw_timestamp_us);
 
     using acc_stat_t = uint8_t;
     float get_covariance_scaled(float base_variance, acc_stat_t accuracy);
@@ -69,6 +73,11 @@ private:
     rclcpp::Time imu_bundle_stamp_;
     rclcpp::Time imu_bundle_start_time_;
     static constexpr double IMU_BUNDLE_TIMEOUT_SEC = 0.05;  // 50 ms
+
+    // Hardware timestamp synchronization
+    bool hw_clock_synced_{false};
+    int64_t hw_clock_offset_us_{0};  // Offset in microseconds: ros_time_us - hw_time_us
+    uint64_t last_hw_timestamp_us_{0};  // Track previous timestamp for discontinuity detection
 
     // Parameters
     std::string frame_id_;

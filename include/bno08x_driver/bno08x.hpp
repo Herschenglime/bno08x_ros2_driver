@@ -25,7 +25,7 @@
 class BNO08x {
 public:
   BNO08x(CommInterface *comm, 
-          std::function<void(void*, sh2_SensorValue_t*)> sensor_callback, void *cookie);
+          std::function<void(void*, sh2_SensorEvent_t*, sh2_SensorValue_t*)> sensor_callback, void *cookie);
   ~BNO08x();
 
   bool begin(int32_t sensor_id = 0);
@@ -48,7 +48,7 @@ private:
   static inline int write_wrapper(sh2_Hal_t* HAL, uint8_t *pBuffer, unsigned len);
   CommInterface* comm_;
   void* cookie_;
-  std::function<void(void*, sh2_SensorValue_t*)> host_callback_;
+  std::function<void(void*, sh2_SensorEvent_t*, sh2_SensorValue_t*)> host_callback_;
   bool reset_occurred_;
 };
 
